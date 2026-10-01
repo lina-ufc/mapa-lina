@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mapa temático do Lina</title>
+<link rel="stylesheet" href="brand.css">
+<link rel="stylesheet" href="style.css">
+<script src="brand.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="util.js"></script>
+<script src="db.js"></script>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div class="brand-header" data-wordmark>
+      <div><p class="name">Laboratório de Modelagem<br>da Informação</p><p class="tagline">Arte · Arquitetura · Ambiente</p></div>
+    </div>
+  </div>
+  <h1>Mapa temático do laboratório</h1>
+  <p class="sub">Vamos descobrir juntos os grandes eixos de pesquisa do Lina. <b id="cont">0</b> <span id="contTxt">pessoas</span> no mapa.</p>
+
+  <!-- Quem é você -->
+  <section id="s1" class="card hide">
+    <h2>Quem é você?</h2>
+    <label for="nome">Nome e sobrenome</label>
+    <input id="nome" autocomplete="name" placeholder="Ex.: Maria Silva" list="nomesCitados">
+    <datalist id="nomesCitados"></datalist>
+    <label for="papel">Você é</label>
+    <select id="papel">
+      <option value="aluno">Aluno(a)</option>
+      <option value="professor">Professor(a)</option>
+    </select>
+    <div id="alunoCampos">
+      <label for="curso">Curso</label>
+      <select id="curso">
+        <option>Graduação</option><option>Mestrado</option><option>Doutorado</option>
+        <option>Pós-doutorado</option><option>Outro</option>
+      </select>
+      <label for="orient">Professor(a) orientador(a) <small>(comece a digitar; se não aparecer, escreva o nome)</small></label>
+      <input id="orient" list="profs" autocomplete="off">
+      <datalist id="profs"></datalist>
+    </div>
+    <button id="enviar1" class="primary">Entrar no mapa</button>
+    <div id="msg1" class="msg"></div>
+  </section>
+
+  <!-- Depois de cadastrado: tudo salva sozinho e aparece no grafo -->
+  <section id="s2" class="hide">
+    <div class="card">
+      <h2>Olá, <span id="meNome"></span></h2>
+      <p class="sub" style="margin:0">Você já está no mapa. Tudo o que adicionar abaixo é salvo na hora e aparece no grafo.</p>
+      <a class="primary" href="grafo.html" style="display:block;text-align:center;text-decoration:none;margin-top:14px;padding:12px 16px;border-radius:8px;background:var(--crimson);color:var(--paper);font-weight:500">Ver o grafo do laboratório</a>
+      <p class="who">Seus temas e colegas podem ser editados quando quiser · <a id="naoSou">não sou eu</a></p>
+    </div>
+
+    <div class="card">
+      <h2>Seus temas de pesquisa</h2>
+      <p class="sub" style="margin-bottom:6px">Escreva livremente e tecle Enter. As sugestões vêm do que os colegas já citaram, para evitar grafias diferentes do mesmo tema.</p>
+      <input id="temaIn" placeholder="Ex.: aprendizado de máquina" autocomplete="off">
+      <div class="chips" id="sugTemas"></div>
+      <div class="chips" id="meusTemas"></div>
+    </div>
+
+    <div class="card">
+      <h2>Com quem você trabalha?</h2>
+      <p class="sub" style="margin-bottom:6px">Escolha na lista e ordene por prioridade: o 1º é quem você mais trabalha junto. Se o colega ainda não entrou, digite o nome completo e adicione.</p>
+      <ol class="rank" id="meusColabs"></ol>
+      <input id="colabIn" placeholder="Buscar ou digitar o nome do colega" autocomplete="off">
+      <div class="list" id="listaPessoas"></div>
+    </div>
+    <div id="status" class="msg"></div>
+    <a href="grafo.html" style="display:block;text-align:center;margin-top:14px;color:var(--crimson);font-weight:500">Ver o grafo do laboratório →</a>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const LS = 'lina_me';
+let pessoas = [], me = null, temas = [], colabs = [], inited = false, saveT = null;
+
+async function refresh() {
+  pessoas = await DB.listPessoas();
+  const id = localStorage.getItem(LS);
+  me = pessoas.find(p => p.id === id) || null;
+  if (!me && id) { localStorage.removeItem(LS); inited = false; }
+  render();
+}
+
+// Todo nome já digitado por alguém (cadastrado ou apenas citado como colega/orientador)
+function knownNames() {
+  const m = new Map();
+  pessoas.forEach(p => m.set(norm(p.nome), { nome: p.nome, reg: true, papel: p.papel, curso: p.curso }));
+  pessoas.forEach(p => {
+    (p.colabs || []).forEach(n => { const k = norm(n); if (!m.has(k)) m.set(k, { nome: n, reg: false }); });
+    if (p.orientador) { const k = norm(p.orientador); if (!m.has(k)) m.set(k, { nome: p.orientador, reg: false, papel: 'professor' }); }
+  });
+  return m;
+}
+
+function render() {
+  $('#cont').textContent = pessoas.length;
+  $('#contTxt').textContent = pessoas.length === 1 ? 'pessoa' : 'pessoas';
+  $('#s1').classList.toggle('hide', !!me);
+  $('#s2').classList.toggle('hide', !me);
+  if (!me) { fillAutofill(); return; }
+  $('#meNome').textContent = me.nome;
+  if (!inited) { temas = [...(me.temas || [])]; colabs = [...(me.colabs || [])]; inited = true; }
+  renderTemas(); renderColabs();
+}
+
+/* ---------- cadastro ---------- */
+function fillAutofill() {
+  const k = [...knownNames().values()];
+  $('#profs').innerHTML = k.filter(x => x.papel === 'professor').map(x => `<option value="${esc(x.nome)}">`).join('');
+  // nomes que colegas já citaram mas que ainda não se cadastraram
+  $('#nomesCitados').innerHTML = k.filter(x => !x.reg).map(x => `<option value="${esc(x.nome)}">`).join('');
+}
+$('#papel').onchange = () => $('#alunoCampos').classList.toggle('hide', $('#papel').value === 'professor');
+
+$('#enviar1').onclick = async () => {
+  const msg = $('#msg1'); msg.className = 'msg'; msg.textContent = '';
+  const nome = $('#nome').value.trim().replace(/\s+/g, ' ');
+  const papel = $('#papel').value;
+  if (nome.split(' ').length < 2) { msg.className = 'msg err'; msg.textContent = 'Informe nome e sobrenome.'; return; }
+  const dup = pessoas.find(p => norm(p.nome) === norm(nome));
+  if (dup) {
+    msg.className = 'msg err';
+    msg.innerHTML = `Já existe um cadastro com esse nome. <a href="#" id="souEu">Sou eu, continuar</a>`;
+    $('#souEu').onclick = e => { e.preventDefault(); localStorage.setItem(LS, dup.id); inited = false; refresh(); };
+    return;
+  }
+  const orient = $('#orient').value.trim().replace(/\s+/g, ' ');
+  if (papel === 'aluno' && !orient) { msg.className = 'msg err'; msg.textContent = 'Informe seu(sua) orientador(a).'; return; }
+  const known = knownNames().get(norm(orient));
+  $('#enviar1').disabled = true;
+  try {
+    const row = await DB.savePessoa({
+      nome, papel,
+      curso: papel === 'aluno' ? $('#curso').value : null,
+      orientador: papel === 'aluno' ? (known ? known.nome : orient) : null,
+      temas: [], colabs: []
+    });
+    localStorage.setItem(LS, row.id); inited = false;
+    await refresh();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch (e) { msg.className = 'msg err'; msg.textContent = 'Erro ao salvar: ' + e.message; }
+  $('#enviar1').disabled = false;
+};
+$('#naoSou').onclick = () => { localStorage.removeItem(LS); inited = false; me = null; render(); };
+
+/* ---------- salvamento automático ---------- */
+function scheduleSave() {
+  const st = $('#status'); st.className = 'msg'; st.textContent = 'Salvando…';
+  clearTimeout(saveT);
+  saveT = setTimeout(async () => {
+    try {
+      await DB.savePessoa({ id: me.id, temas, colabs });
+      st.className = 'msg ok'; st.textContent = 'Salvo ✓ já aparece no grafo';
+    } catch (e) { st.className = 'msg err'; st.textContent = 'Não foi possível salvar: ' + e.message; }
+  }, 400);
+}
+
+/* ---------- temas ---------- */
+function addTema(t) {
+  t = t.trim().replace(/\s+/g, ' ');
+  if (!t) return;
+  const canon = themeIndex(pessoas).get(norm(t));
+  const label = canon ? canon.label : t;
+  if (temas.some(x => norm(x) === norm(label))) { $('#temaIn').value = ''; return; }
+  if (temas.length >= 8) { $('#status').className = 'msg err'; $('#status').textContent = 'Máximo de 8 temas.'; return; }
+  temas.push(label); $('#temaIn').value = ''; renderTemas(); scheduleSave();
+}
+$('#temaIn').onkeydown = e => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTema($('#temaIn').value); } };
+$('#temaIn').oninput = renderTemas;
+
+function renderTemas() {
+  $('#meusTemas').innerHTML = temas.map((t, i) => `<span class="chip">${esc(t)}<button data-i="${i}" title="remover">✕</button></span>`).join('');
+  $('#meusTemas').querySelectorAll('button').forEach(b => b.onclick = () => { temas.splice(+b.dataset.i, 1); renderTemas(); scheduleSave(); });
+  const q = norm($('#temaIn').value);
+  const mine = new Set(temas.map(norm));
+  const sug = [...themeIndex(pessoas).values()].filter(t => !mine.has(t.key) && (!q || t.key.includes(q)))
+    .sort((a, b) => b.count - a.count).slice(0, 10);
+  $('#sugTemas').innerHTML = sug.map(t => `<span class="chip sug" data-l="${esc(t.label)}">${esc(t.label)} · ${t.count}</span>`).join('');
+  $('#sugTemas').querySelectorAll('.sug').forEach(c => c.onclick = () => addTema(c.dataset.l));
+}
+
+/* ---------- colegas ---------- */
+function addColab(nome) {
+  nome = nome.trim().replace(/\s+/g, ' ');
+  if (!nome) return;
+  const k = norm(nome), known = knownNames().get(k), st = $('#status');
+  if (k === norm(me.nome)) { st.className = 'msg err'; st.textContent = 'Você não precisa se incluir.'; return; }
+  if (colabs.some(c => norm(c) === k)) { $('#colabIn').value = ''; renderColabs(); return; }
+  if (!known && nome.split(' ').length < 2) { st.className = 'msg err'; st.textContent = 'Digite nome e sobrenome do colega.'; return; }
+  colabs.push(known ? known.nome : nome);
+  $('#colabIn').value = ''; renderColabs(); scheduleSave();
+}
+
+function renderColabs() {
+  const reg = new Set(pessoas.map(p => norm(p.nome)));
+  $('#meusColabs').innerHTML = colabs.map((n, i) => `<li><span>${esc(n)}${reg.has(norm(n)) ? '' : ' <small style="color:var(--muted)">(ainda não entrou)</small>'}</span>
+    <button class="small" data-a="up" data-i="${i}" ${i === 0 ? 'disabled' : ''}>↑</button>
+    <button class="small" data-a="dn" data-i="${i}" ${i === colabs.length - 1 ? 'disabled' : ''}>↓</button>
+    <button class="small danger" data-a="rm" data-i="${i}">✕</button></li>`).join('');
+  $('#meusColabs').querySelectorAll('button').forEach(b => b.onclick = () => {
+    const i = +b.dataset.i, a = b.dataset.a;
+    if (a === 'rm') colabs.splice(i, 1);
+    else { const j = a === 'up' ? i - 1 : i + 1; [colabs[i], colabs[j]] = [colabs[j], colabs[i]]; }
+    renderColabs(); scheduleSave();
+  });
+  const raw = $('#colabIn').value.trim(), q = norm(raw);
+  const chosen = new Set(colabs.map(norm)), self = norm(me.nome);
+  const cand = [...knownNames().values()].filter(x => norm(x.nome) !== self && !chosen.has(norm(x.nome)) && (!q || norm(x.nome).includes(q)))
+    .sort((a, b) => (b.reg - a.reg) || a.nome.localeCompare(b.nome, 'pt'));
+  let html = cand.map(x => `<div data-n="${esc(x.nome)}"><span>${esc(x.nome)}</span><small>${x.reg ? (x.papel === 'professor' ? 'Professor(a)' : esc(x.curso || '')) : 'citado(a), ainda não entrou'}</small></div>`).join('');
+  const exact = q && (knownNames().has(q) || chosen.has(q) || q === self);
+  if (raw && !exact) html += `<div data-n="${esc(raw)}"><span>➕ Adicionar “${esc(raw)}”</span><small>ainda não entrou</small></div>`;
+  $('#listaPessoas').innerHTML = html || '<div style="cursor:default;color:var(--muted)">Ninguém na lista ainda. Digite o nome do colega.</div>';
+  $('#listaPessoas').querySelectorAll('[data-n]').forEach(d => d.onclick = () => addColab(d.dataset.n));
+}
+$('#colabIn').oninput = renderColabs;
+$('#colabIn').onkeydown = e => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const raw = $('#colabIn').value.trim();
+  if (raw) addColab(raw);
+};
+
+DB.onChange(refresh);
+refresh();
+</script>
+</body>
+</html>
