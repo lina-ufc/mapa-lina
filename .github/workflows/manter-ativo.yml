@@ -1,10 +1,13 @@
-# Duas vezes por semana: (1) consulta o Supabase, o que impede a pausa por inatividade;
+# Duas vezes por DIA: (1) consulta o Supabase, o que impede a pausa por inatividade;
 # (2) salva uma cópia dos dados em data/pessoas.json, usada pelo grafo se o banco estiver fora do ar.
+# Várias tentativas por dia porque o GitHub às vezes não consegue iniciar uma rotina agendada
+# (aconteceu em 05/10/2026). Os horários evitam o minuto 0, quando a fila do GitHub é maior.
 name: Manter Supabase ativo e salvar cópia
 
 on:
   schedule:
-    - cron: '0 12 * * 1,4'
+    - cron: '17 6 * * *'
+    - cron: '43 18 * * *'
   workflow_dispatch:
 
 permissions:
@@ -13,6 +16,7 @@ permissions:
 jobs:
   copia:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -22,10 +26,11 @@ jobs:
           KEY=$(grep -oP 'SUPABASE_ANON_KEY:\s*"\K[^"]+' config.js || true)
           if [ -z "$URL" ] || [ -z "$KEY" ]; then echo "config.js sem chaves; nada a fazer"; exit 0; fi
           mkdir -p data
-          curl -fsS "$URL/rest/v1/pessoas?select=*&order=criado_em" \
+          curl -fsS --retry 4 --retry-delay 15 --retry-all-errors "$URL/rest/v1/pessoas?select=*&order=criado_em" \
             -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -o data/pessoas.novo.json
           mv data/pessoas.novo.json data/pessoas.json
-          date -u +"%Y-%m-%dT%H:%M:%SZ" > data/ultima-checagem.txt
+          # Marca de atividade no repositório só às segundas (evita o GitHub desativar rotinas após 60 dias sem atividade)
+          if [ "$(date -u +%u)" = "1" ]; then date -u +"%Y-%m-%dT%H:%M:%SZ" > data/ultima-checagem.txt; fi
 
       - name: Salvar no repositório
         run: |
